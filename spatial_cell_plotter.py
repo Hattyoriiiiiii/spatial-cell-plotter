@@ -67,12 +67,18 @@ class SpatialCellPlotter:
 
         self.gene_panel = self._load_json(self.gene_panel_path)
         self.experiment = self._load_json(self.experiment_path)
+
+        xoa_version = self.experiment["analysis_sw_version"].split("-")[1]
+        major, minor, patch, _ = map(int, xoa_version.split("."))
+        self.multi_stain = True if major >= 2 else False
+
         self.cells_meta = self._load_cells_meta(self.cells_csv_path)
         self.cellseg_mask, self.cellseg_mask_binary, self.nucseg_mask, self.nucseg_mask_binary = self._load_mask(self.cells_zarr_path)
         self.transcripts = self._load_transcripts(self.transcripts_parquet_path)
         self.cell_boundaries = self._load_cell_boundaries(self.cell_boundaries_parquet_path)
         self.images = self._load_images(self.images_path)
         self.adata = sc.read_h5ad(self.adata_path)
+
 
         mem_after = psutil.virtual_memory().used / 10**9
         cpu_percent = psutil.cpu_percent(None, percpu=True)
@@ -149,15 +155,11 @@ class SpatialCellPlotter:
         XOA v2.0以降で`morphology_focus`ディレクトリが存在する
         ref: https://www.10xgenomics.com/support/software/xenium-onboard-analysis/latest/release-notes/release-notes-for-xoa#v2-0
         """
-        xoa_version = self.experiment["analysis_sw_version"].split("-")[1]
-        major, minor, patch, _ = map(int, xoa_version.split("."))
 
-        # multi_stain = False
-        if major >= 2:
-            # multi_stain = True
+        if self.multi_stain:
             ret = [tifffile.imread(f"{path}/morphology_focus_{i:04d}.ome.tif", is_ome=False, level=0) for i in range(4)]
         else:
-            ret = tifffile.imread(f"{self.data_path}/morphology_focus.ome.tif", is_ome=True, level=0)
+            ret = [tifffile.imread(f"{self.data_path}/morphology_focus.ome.tif", is_ome=True, level=0)]
         return ret
 
     @stop_watch
@@ -187,7 +189,7 @@ class SpatialCellPlotter:
 
         cropped_cellmask = self.cellseg_mask_binary[y_min:y_max, x_min:x_max]
         cropped_nucmask = self.nucseg_mask_binary[y_min:y_max, x_min:x_max]
-        cropped_images = [img[y_min:y_max, x_min:x_max] for img in self.images]
+        cropped_images = [img[y_min:y_max, x_min:x_max] for img in self.images] # if self.multi_stain else [self.images[y_min:y_max, x_min:x_max]]
 
         cropped_cells_meta = self.cells_meta.loc[
             (self.cells_meta["x"] >= x_min) & (self.cells_meta["x"] <= x_max) &
@@ -415,6 +417,84 @@ class SpatialCellPlotter:
         指定したtranscriptについて、各クラスターでの発現量をviolin plotで表示する(右側)
         """
         return None
+
+    @stop_watch
+    def plot_cell_dapi(
+        self,
+        cell_id: str,
+        expand: int = 100,
+        n_rows: int = 2,
+        n_cols: int = 3,
+        same_cluster: bool = True,
+        cluster: str = "leiden",
+        # cell_boundary: bool = True,
+        boundary: str = "cell",
+        random_state: int = 0
+        ) -> None:
+        """
+        DAPIのみをプロットする
+        """
+        n_cells = n_rows * n_cols
+
+        if same_cluster:
+            n_cluster = self.adata.obs[self.adata.obs["cell_id"] == cell_id][cluster].values[0]
+            subset_adata = sc.pp.subsample(
+                self.adata[self.adata.obs[cluster] == n_cluster],
+                n_obs=n_cells - 1,
+                random_state=random_state,
+                copy=True)
+            cell_ids = [cell_id] + subset_adata.obs["cell_id"].tolist()
+            print(f"Picked cell_ids: {cell_ids}")
+        else:
+            subset_adata = sc.pp.subsample(
+                self.adata,
+                n_obs=n_cells - 1,
+                random_state=random_state,
+                copy=True)
+            cell_ids = [cell_id] + subset_adata.obs["cell_id"].tolist()
+            print(f"Picked cell_ids: {cell_ids}")
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(round(3.5*n_cols), round(2.5*n_cols)), sharex="all", sharey="all")
+        fig.suptitle(f"DAPI for Cell ID: {cell_id}", fontweight="bold", fontsize=20)
+
+        for i, cid in enumerate(cell_ids):
+            cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"]
+            cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"]
+            cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
+            cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
+            cid_cropped_img_tiff_0000 = self.images[0][cid_y_min:cid_y_max, cid_x_min:cid_x_max]
+
+            cid_cropped_cells_meta = self.cells_meta.loc[
+                (self.cells_meta["x"] >= cid_x_min) & (self.cells_meta["x"] <= cid_x_max) &
+                (self.cells_meta["y"] >= cid_y_min) & (self.cells_meta["y"] <= cid_y_max)].copy()
+            cid_cropped_cells_meta["x"] = cid_cropped_cells_meta["x"] - cid_x_min
+            cid_cropped_cells_meta["y"] = cid_cropped_cells_meta["y"] - cid_y_min
+
+            cid_cropped_boundaries = self.cell_boundaries.filter(
+                (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+            ).with_columns([
+                (pl.col("x") - cid_x_min).alias("x"),
+                (pl.col("y") - cid_y_min).alias("y"),])
+
+            axes[i // n_cols][i % n_cols].imshow(cid_cropped_img_tiff_0000, cmap="gray")
+            axes[i // n_cols][i % n_cols].scatter(data=cid_cropped_cells_meta[cid_cropped_cells_meta["cell_id"] == cid], x="x", y="y", color="yellow", marker="*", s=100)
+            axes[i // n_cols][i % n_cols].set_title(f"DAPI ({cid})")
+            axes[i // n_cols][i % n_cols].set_xlim(0, expand*2)
+            axes[i // n_cols][i % n_cols].set_ylim(expand*2, 0)
+
+            if boundary:
+                for cell_id, group in cid_cropped_boundaries.group_by("cell_id"):
+                    x = group["x"]
+                    y = group["y"]
+                    axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.7)
+            
+        plt.tight_layout()
+        plt.show()
+
+        del cid_cropped_img_tiff_0000, cid_cropped_cells_meta, cid_cropped_boundaries
+        gc.collect()
+
 
     @stop_watch
     def plot_cluster(
