@@ -49,6 +49,7 @@ class SpatialCellPlotter:
         cells_zarr_path: str = None,
         transcripts_parquet_path: str = None,
         cell_boundaries_parquet_path: str = None,
+        nucleus_boundaries_parquet_path: str = None,
         images_path: str = None,
         adata_path: str = None
     ) -> None:
@@ -59,6 +60,7 @@ class SpatialCellPlotter:
         self.cells_zarr_path = cells_zarr_path or os.path.join(data_path, "cells.zarr.zip")
         self.transcripts_parquet_path = transcripts_parquet_path or os.path.join(data_path, "transcripts.parquet")
         self.cell_boundaries_parquet_path = cell_boundaries_parquet_path or os.path.join(data_path, "cell_boundaries.parquet")
+        self.nucleus_boundaries_parquet_path = nucleus_boundaries_parquet_path or os.path.join(data_path, "nucleus_boundaries.parquet")
         self.images_path = images_path or os.path.join(data_path, "morphology_focus")
         self.adata_path = adata_path or os.path.join(data_path, "adata.h5ad")
 
@@ -75,7 +77,8 @@ class SpatialCellPlotter:
         self.cells_meta = self._load_cells_meta(self.cells_csv_path)
         self.cellseg_mask, self.cellseg_mask_binary, self.nucseg_mask, self.nucseg_mask_binary = self._load_mask(self.cells_zarr_path)
         self.transcripts = self._load_transcripts(self.transcripts_parquet_path)
-        self.cell_boundaries = self._load_cell_boundaries(self.cell_boundaries_parquet_path)
+        self.cell_boundaries = self._load_boundaries(self.cell_boundaries_parquet_path)
+        self.nucleus_boundaries = self._load_boundaries(self.nucleus_boundaries_parquet_path)
         self.images = self._load_images(self.images_path)
         self.adata = sc.read_h5ad(self.adata_path)
 
@@ -142,7 +145,7 @@ class SpatialCellPlotter:
         ])
 
     @stop_watch
-    def _load_cell_boundaries(self, path: str) -> pl.DataFrame:
+    def _load_boundaries(self, path: str) -> pl.DataFrame:
         df = pl.read_parquet(path)
         return df.with_columns([
             (pl.col("vertex_x") / self.experiment["pixel_size"]).alias("x"),
@@ -427,8 +430,7 @@ class SpatialCellPlotter:
         n_cols: int = 3,
         same_cluster: bool = True,
         cluster: str = "leiden",
-        # cell_boundary: bool = True,
-        boundary: str = "cell",
+        boundary: str = "both",
         random_state: int = 0
         ) -> None:
         """
@@ -469,13 +471,7 @@ class SpatialCellPlotter:
                 (self.cells_meta["y"] >= cid_y_min) & (self.cells_meta["y"] <= cid_y_max)].copy()
             cid_cropped_cells_meta["x"] = cid_cropped_cells_meta["x"] - cid_x_min
             cid_cropped_cells_meta["y"] = cid_cropped_cells_meta["y"] - cid_y_min
-
-            cid_cropped_boundaries = self.cell_boundaries.filter(
-                (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
-                (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
-            ).with_columns([
-                (pl.col("x") - cid_x_min).alias("x"),
-                (pl.col("y") - cid_y_min).alias("y"),])
+            cell_ids_cropped = cid_cropped_cells_meta["cell_id"].unique()
 
             axes[i // n_cols][i % n_cols].imshow(cid_cropped_img_tiff_0000, cmap="gray")
             axes[i // n_cols][i % n_cols].scatter(data=cid_cropped_cells_meta[cid_cropped_cells_meta["cell_id"] == cid], x="x", y="y", color="yellow", marker="*", s=100)
@@ -483,16 +479,113 @@ class SpatialCellPlotter:
             axes[i // n_cols][i % n_cols].set_xlim(0, expand*2)
             axes[i // n_cols][i % n_cols].set_ylim(expand*2, 0)
 
-            if boundary:
+
+            # def plot_clipped_boundary(boundary_df, alpha_val):
+            #     """
+            #     指定したcell_idのboundaryをプロットする
+            #     """
+            #     from shapely.geometry import Polygon, box
+            #     from shapely.ops import clip_by_rect
+
+            #     boundaries = boundary_df.filter(pl.col("cell_id") == cid)
+            #     polygon = Polygon(zip(boundaries["x"], boundaries["y"]))
+
+            #     clipping_box = box(cid_x_min, cid_y_min, cid_x_max, cid_y_max)
+            #     clipped_polygon = polygon.intersection(clipping_box)
+
+            #     if not clipped_polygon.is_empty:
+            #         x, y = clipped_polygon.exterior.xy
+            #         x_shifted = [coord - cid_x_min for coord in x]
+            #         y_shifted = [coord - cid_y_min for coord in y]
+            #         axes[i // n_cols][i % n_cols].plot(x_shifted, y_shifted, label=f"Cell {cid}", alpha=alpha_val)
+                
+            # if boundary in ["cell", "both"]:
+            #     plot_clipped_boundary(self.cell_boundaries, 0.7)
+
+            # if boundary in ["nuclei", "both"]:
+            #     plot_clipped_boundary(self.nucleus_boundaries, 0.4)
+
+            if boundary == "cell":
+                # cid_cropped_boundaries = self.cell_boundaries.filter(
+                #     (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                #     (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                # ).with_columns([
+                #     (pl.col("x") - cid_x_min).alias("x"),
+                #     (pl.col("y") - cid_y_min).alias("y"),])
+                cid_cropped_boundaries = self.cell_boundaries.filter(
+                    pl.col("cell_id").is_in(cell_ids_cropped)
+                ).with_columns([
+                    (pl.col("x") - cid_x_min).alias("x"),
+                    (pl.col("y") - cid_y_min).alias("y"),])
+
                 for cell_id, group in cid_cropped_boundaries.group_by("cell_id"):
                     x = group["x"]
                     y = group["y"]
                     axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.7)
+                
+                del cid_cropped_boundaries
             
+            elif boundary == "nuclei":
+                # cid_cropped_boundaries = self.nucleus_boundaries.filter(
+                #     (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                #     (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                # ).with_columns([
+                #     (pl.col("x") - cid_x_min).alias("x"),
+                #     (pl.col("y") - cid_y_min).alias("y"),])
+                cid_cropped_boundaries = self.nucleus_boundaries.filter(
+                    pl.col("cell_id").is_in(cell_ids_cropped)
+                ).with_columns([
+                    (pl.col("x") - cid_x_min).alias("x"),
+                    (pl.col("y") - cid_y_min).alias("y"),])
+
+                for cell_id, group in cid_cropped_boundaries.group_by("cell_id"):
+                    x = group["x"]
+                    y = group["y"]
+                    axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.7)
+                
+                del cid_cropped_boundaries
+            
+            elif boundary == "both":
+                # cid_cropped_boundaries_cell = self.cell_boundaries.filter(
+                #     (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                #     (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                # ).with_columns([
+                #     (pl.col("x") - cid_x_min).alias("x"),
+                #     (pl.col("y") - cid_y_min).alias("y"),])
+                cid_cropped_boundaries_cell = self.cell_boundaries.filter(
+                    pl.col("cell_id").is_in(cell_ids_cropped)
+                ).with_columns([
+                    (pl.col("x") - cid_x_min).alias("x"),
+                    (pl.col("y") - cid_y_min).alias("y"),])
+
+                # cid_cropped_boundaries_nuclei = self.nucleus_boundaries.filter(
+                #     (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                #     (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                # ).with_columns([
+                #     (pl.col("x") - cid_x_min).alias("x"),
+                #     (pl.col("y") - cid_y_min).alias("y"),])
+                cid_cropped_boundaries_nuclei = self.nucleus_boundaries.filter(
+                    pl.col("cell_id").is_in(cell_ids_cropped)
+                ).with_columns([
+                    (pl.col("x") - cid_x_min).alias("x"),
+                    (pl.col("y") - cid_y_min).alias("y"),])
+
+                for cell_id, group in cid_cropped_boundaries_cell.group_by("cell_id"):
+                    x = group["x"]
+                    y = group["y"]
+                    axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.7)
+                
+                for cell_id, group in cid_cropped_boundaries_nuclei.group_by("cell_id"):
+                    x = group["x"]
+                    y = group["y"]
+                    axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.4)
+                
+                del cid_cropped_boundaries_cell, cid_cropped_boundaries_nuclei
+
         plt.tight_layout()
         plt.show()
 
-        del cid_cropped_img_tiff_0000, cid_cropped_cells_meta, cid_cropped_boundaries
+        del cid_cropped_img_tiff_0000, cid_cropped_cells_meta
         gc.collect()
 
 
@@ -622,6 +715,84 @@ class SpatialCellPlotter:
         #     for gene in self.gene_panel:
         #         executor.submit(self._calc_ssgsea, gene)
 
+        return None
+
+
+    def process_and_cluster_nuclei(self, cell_ids, expand=100, n_clusters=3):
+        """
+        クロップしたnucleiのboundariesを使ってマスクを作成し、形状特徴量を抽出してクラスタリングを行う。
+        """
+        import numpy as np
+        from shapely.geometry import Polygon
+        from skimage.draw import polygon
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+        from skimage.measure import label, regionprops
+        import pandas as pd
+
+        features = []  # 特徴量を格納するリスト
+
+        for cid in cell_ids:
+            # セルの中心座標を取得
+            cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"].iloc[0]
+            cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"].iloc[0]
+            cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
+            cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
+            cropped_img = self.images[0][cid_y_min:cid_y_max, cid_x_min:cid_x_max]
+
+            # クロップされたnucleiのboundariesを取得
+            cropped_nuclei_boundaries = self.nucleus_boundaries.filter(
+                pl.col("cell_id") == cid
+            )
+
+            # マスク画像を作成
+            mask = np.zeros_like(cropped_img, dtype=np.uint8)
+            for _, group in cropped_nuclei_boundaries.group_by("cell_id"):
+                # ポリゴンを作成
+                polygon_coords = Polygon(zip(group["x"] - cid_x_min, group["y"] - cid_y_min))
+                if not polygon_coords.is_empty:
+                    rr, cc = polygon(np.array(polygon_coords.exterior.xy[1]), 
+                                    np.array(polygon_coords.exterior.xy[0]), 
+                                    shape=mask.shape)
+                    mask[rr, cc] = 1  # 対象領域を1に設定
+
+            # マスク画像を用いた領域の形状特徴量を計算
+            labeled_mask = label(mask)  # ラベル付け（複数領域がある場合の対応）
+            for region in regionprops(labeled_mask):
+                # 各領域から形状特徴量を抽出
+                features.append({
+                    "cell_id": cid,
+                    "area": region.area,  # 面積
+                    "perimeter": region.perimeter,  # 周囲長
+                    "eccentricity": region.eccentricity,  # 偏心率
+                    "solidity": region.solidity,  # 凸充実度
+                    "extent": region.extent,  # 広がり
+                    "aspect_ratio": region.bbox[3] / region.bbox[2]  # アスペクト比
+                })
+
+        # 特徴量をデータフレームに変換
+        features_df = pd.DataFrame(features)
+
+        # クラスタリングの実施
+        scaler = StandardScaler()
+        clustering_features = features_df[["area", "perimeter", "eccentricity", "solidity", "extent", "aspect_ratio"]]
+        clustering_features_scaled = StandardScaler().fit_transform(clustering_features)
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=0)
+        features_df["cluster"] = kmeans.fit_predict(clustering_features_scaled)
+
+        return features_df
+
+
+    def get_count_from_nuclei(self, cell_ids, expand=100):
+        """
+        クロップしたnucleiのboundariesを使ってマスクを作成し、形状特徴量を抽出してクラスタリングを行う。
+        """
+        # for i in [0, 1, 2, 3, 4, 5]:
+        #     df = pl.DataFrame(
+        #         scipy.sparse.csr_matrix(cp.adata.layers[f"count_{i}um_from_nuclei"]).toarray())
+        #     df.columns = cp.adata.var_names
+        #     cp.adata.obs[f"count_{i}um_from_nuclei"] = df.sum_horizontal()
         return None
 
 
