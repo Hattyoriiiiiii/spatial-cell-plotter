@@ -51,7 +51,8 @@ class SpatialCellPlotter:
         cell_boundaries_parquet_path: str = None,
         nucleus_boundaries_parquet_path: str = None,
         images_path: str = None,
-        adata_path: str = None
+        adata_path: str = None,
+        load_mask: bool = False
     ) -> None:
         self.data_path = data_path
         self.gene_panel_path = gene_panel_path or os.path.join(data_path, "gene_panel.json")
@@ -75,7 +76,12 @@ class SpatialCellPlotter:
         self.multi_stain = True if major >= 2 else False
 
         self.cells_meta = self._load_cells_meta(self.cells_csv_path)
-        self.cellseg_mask, self.cellseg_mask_binary, self.nucseg_mask, self.nucseg_mask_binary = self._load_mask(self.cells_zarr_path)
+
+        if load_mask:
+            self.cellseg_mask, self.cellseg_mask_binary, self.nucseg_mask, self.nucseg_mask_binary = self._load_mask(self.cells_zarr_path)
+        else:
+            self.cellseg_mask, self.cellseg_mask_binary, self.nucseg_mask, self.nucseg_mask_binary = None, None, None, None
+
         self.transcripts = self._load_transcripts(self.transcripts_parquet_path)
         self.cell_boundaries = self._load_boundaries(self.cell_boundaries_parquet_path)
         self.nucleus_boundaries = self._load_boundaries(self.nucleus_boundaries_parquet_path)
@@ -173,6 +179,7 @@ class SpatialCellPlotter:
         location: bool = True,
         same_cluster: bool = True,
         cell_boundary: bool = True,
+        # boundary: str = "both",
         random_state: int = 0
         ) -> None:
         """_summary_
@@ -721,7 +728,8 @@ class SpatialCellPlotter:
         self, 
         # data: pd.DataFrame,
         left: str = "nucleus_area",
-        right: str = "cell_area"
+        right: str = "cell_area",
+        log_scale: bool = True
         ) -> None:
         """nucleus_areaとcell_areaのヒストグラムをプロットする
 
@@ -731,10 +739,24 @@ class SpatialCellPlotter:
         n_total = len(self.cells_meta)
         n_bins = round(1+np.log2(n_total))
         fig, axes = plt.subplots(1, 2, figsize=(9,4))
-        sns.histplot(self.cells_meta["nucleus_area"], bins=n_bins*2, color="Green", ax=axes[0])
-        sns.histplot(self.cells_meta["cell_area"], bins=n_bins*2, color="Green", ax=axes[1])
-        axes[0].set_title("Nucleus area (µm$^2$)")
-        axes[1].set_title("Cell area (µm$^2$)")
+        if log_scale:
+            sns.histplot(self.cells_meta[left], bins=n_bins*2, color="Green", ax=axes[0], log_scale=True)
+            sns.histplot(self.cells_meta[right], bins=n_bins*2, color="Green", ax=axes[1], log_scale=True)
+            if left == "nucleus_area":
+                axes[0].set_title("Nucleus area (log scale)")
+            if right == "cell_area":
+                axes[1].set_title("Cell area (log scale)")
+            if right == "transcript_counts":
+                axes[1].set_title("Transcript count (log scale)")
+        else:
+            sns.histplot(self.cells_meta[left], bins=n_bins*2, color="Green", ax=axes[0])
+            sns.histplot(self.cells_meta[right], bins=n_bins*2, color="Green", ax=axes[1])
+            if left == "nucleus_area":
+                axes[0].set_title("Nucleus area (µm$^2$)")
+            if right == "cell_area":
+                axes[1].set_title("Cell area (µm$^2$)")
+            if right == "transcript_counts":
+                axes[1].set_title("Transcript count")
         plt.tight_layout()
         plt.show()
 
