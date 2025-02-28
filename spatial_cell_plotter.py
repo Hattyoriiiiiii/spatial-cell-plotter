@@ -414,11 +414,14 @@ class SpatialCellPlotter:
         plt.show()
 
     @stop_watch
-    def _plot_transcripts(self, cell_id: str, expand: int = 100, transcripts: str = "COL1A1"):
+    def plot_transcripts(self, cell_id: str, expand: int = 100, transcripts: str = "COL1A1"):
         """
         Cell IDの周辺のTranscriptsをプロットする(左側), DAPI + cell segmentation polygon + transcriptの位置
         指定したtranscriptについて、各クラスターでの発現量をviolin plotで表示する(右側)
         """
+
+        df = self.transcripts.filter(pl.col("feature_name") == transcripts)
+
         return None
 
     @stop_watch
@@ -431,6 +434,7 @@ class SpatialCellPlotter:
         same_cluster: bool = True,
         cluster: str = "leiden",
         boundary: str = "both",
+        transcripts: List[str] = None,
         random_state: int = 0
         ) -> None:
         """
@@ -581,6 +585,40 @@ class SpatialCellPlotter:
                     axes[i // n_cols][i % n_cols].plot(x, y, label=f"Cell {cell_id}", alpha=0.4)
                 
                 del cid_cropped_boundaries_cell, cid_cropped_boundaries_nuclei
+
+        if transcripts is not None:
+            transcript_df = self.transcripts.filter(pl.col("feature_name").is_in(transcripts))
+            # transcriptごとに色を分けて、plotする。legendは右上に表示
+            for transcript in transcripts:
+                for i, cid in enumerate(cell_ids):
+                    cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"]
+                    cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"]
+                    cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
+                    cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
+                    cid_cropped_transcript = transcript_df.filter(
+                        (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                        (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                    ).with_columns([
+                        (pl.col("x") - cid_x_min).alias("x"),
+                        (pl.col("y") - cid_y_min).alias("y"),])
+                    axes[i // n_cols][i % n_cols].scatter(data=cid_cropped_transcript, x="x", y="y", color="red", s=100)
+                    print(f"Transcript {transcript} for {cid} is plotted: {len(cid_cropped_transcript)} points")
+    
+        # if transcript in not None:
+        #     transcript_df = self.transcripts.filter(pl.col("feature_name") == transcript)
+        #     for i, cid in enumerate(cell_ids):
+        #         cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"]
+        #         cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"]
+        #         cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
+        #         cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
+        #         cid_cropped_transcript = transcript_df.filter(
+        #             (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+        #             (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+        #         ).with_columns([
+        #             (pl.col("x") - cid_x_min).alias("x"),
+        #             (pl.col("y") - cid_y_min).alias("y"),])
+        #         axes[i // n_cols][i % n_cols].scatter(data=cid_cropped_transcript, x="x", y="y", color="red", s=100)
+        #         print(f"Transcript {transcript} for {cid} is plotted: {len(cid_cropped_transcript)} points")
 
         plt.tight_layout()
         plt.show()
