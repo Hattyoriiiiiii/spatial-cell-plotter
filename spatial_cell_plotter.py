@@ -427,7 +427,8 @@ class SpatialCellPlotter:
         指定したtranscriptについて、各クラスターでの発現量をviolin plotで表示する(右側)
         """
 
-        df = self.transcripts.filter(pl.col("feature_name") == transcripts)
+        # df = self.transcripts.filter(pl.col("feature_name") == transcripts)
+        df = self.transcripts.filter(pl.col("feature_name").is_in(transcripts))
 
         return None
 
@@ -594,23 +595,48 @@ class SpatialCellPlotter:
                 del cid_cropped_boundaries_cell, cid_cropped_boundaries_nuclei
 
         if transcripts is not None:
+            # カラーマップの作成（トランスクリプトごとに異なる色を割り当てる）
+            cmap = plt.get_cmap("tab10", len(transcripts))  # "tab10"カラーマップを使用
+            transcript_colors = {transcript: cmap(i) for i, transcript in enumerate(transcripts)}
+
+            # トランスクリプトデータのフィルタリング
             transcript_df = self.transcripts.filter(pl.col("feature_name").is_in(transcripts))
-            # transcriptごとに色を分けて、plotする。legendは右上に表示
-            for transcript in transcripts:
-                for i, cid in enumerate(cell_ids):
-                    cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"]
-                    cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"]
-                    cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
-                    cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
-                    cid_cropped_transcript = transcript_df.filter(
-                        (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
-                        (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
-                    ).with_columns([
-                        (pl.col("x") - cid_x_min).alias("x"),
-                        (pl.col("y") - cid_y_min).alias("y"),])
-                    axes[i // n_cols][i % n_cols].scatter(data=cid_cropped_transcript, x="x", y="y", color="red", s=100)
-                    print(f"Transcript {transcript} for {cid} is plotted: {len(cid_cropped_transcript)} points")
-    
+
+            # transcriptごとに色を分け、プロット
+            for i, cid in enumerate(cell_ids):
+                cid_x_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["x"]
+                cid_y_centroid = self.cells_meta[self.cells_meta["cell_id"] == cid]["y"]
+                cid_x_min, cid_x_max = int(round(cid_x_centroid - expand)), int(round(cid_x_centroid + expand))
+                cid_y_min, cid_y_max = int(round(cid_y_centroid - expand)), int(round(cid_y_centroid + expand))
+                
+                # 現在のセル領域でのトランスクリプトデータをフィルタリング
+                cid_cropped_transcript = transcript_df.filter(
+                    (pl.col("x") >= cid_x_min) & (pl.col("x") <= cid_x_max) &
+                    (pl.col("y") >= cid_y_min) & (pl.col("y") <= cid_y_max)
+                ).with_columns([
+                    (pl.col("x") - cid_x_min).alias("x"),
+                    (pl.col("y") - cid_y_min).alias("y"),
+                ])
+
+                # トランスクリプトごとに色分けしてプロット
+                for transcript in transcripts:
+                    transcript_data = cid_cropped_transcript.filter(pl.col("feature_name") == transcript)
+                    axes[i // n_cols][i % n_cols].scatter(
+                        transcript_data["x"], transcript_data["y"],
+                        color=transcript_colors[transcript],
+                        label=transcript,  # 凡例用ラベル
+                        s=40, alpha=0.7
+                    )
+                    
+                    print(f"Transcript {transcript} for {cid} is plotted: {len(transcript_data)} points")
+
+            # プロット全体に凡例を追加
+            handles, labels = [], []
+            for transcript, color in transcript_colors.items():
+                handles.append(plt.Line2D([], [], color=color, marker='o', linestyle='None', markersize=6))
+                labels.append(transcript)
+
+            fig.legend(handles, labels, loc="upper right", title="Transcripts")  # 凡例を図内に追加
         # if transcript in not None:
         #     transcript_df = self.transcripts.filter(pl.col("feature_name") == transcript)
         #     for i, cid in enumerate(cell_ids):
@@ -929,3 +955,52 @@ def process_ssGSEA(args):
         "geneset": geneset,
         "score": score
     }
+
+
+def get_cp_obj(data_path, sample_list, i):
+
+    xenium_path = os.path.join(data_path, sample_list[i])
+    zarr_path = os.path.join(xenium_path, "Xenium.zarr")
+    adata_path_today = f"{xenium_path}/{today}_adata.h5ad"
+
+    with open(os.path.join(xenium_path, "experiment.xenium")) as f:
+        experiment = json.load(f)
+
+    for i in range(30):
+        lastday = format(datetime.date.today() - datetime.timedelta(days=i), "%Y%m%d")
+        adata_path_last = f"{xenium_path}/{lastday}_adata.h5ad"
+        # print(adata_path_last)
+        if os.path.exists(adata_path_last):
+            print(f"Last update: {lastday} → {adata_path_last}")
+            break
+
+    if os.path.exists(adata_path_last):
+        print(f"Finded last path → {adata_path_last}")
+        pass
+    else:
+        if os.path.exists(zarr_path):
+            sdata = sd.read_zarr(zarr_path)
+        else:
+            sdata = xenium(xenium_path)
+            sdata.write(zarr_path)
+
+        adata = sdata.tables["table"]
+        adata.write(adata_path_today, compression="gzip")
+        adata_path_last = adata_path_today
+
+
+    if "cp" in globals():
+        print("Found: cp")
+        print(f"Saving adata to ... {adata_path_today}")
+
+        print("Saved")
+#         del cp
+#         import gc
+#         gc.collect()
+
+    return SpatialCellPlotter(
+        data_path = os.path.join(xenium_path),
+        adata_path = adata_path_last
+    )
+    
+
